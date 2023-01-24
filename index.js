@@ -1,7 +1,6 @@
 const express = require('express');
 const http = require('http');
 const ws = require('ws');
-const path = require('path');
 
 const app = express();
 app.get('/', (req, res) => {
@@ -11,100 +10,82 @@ app.get('/', (req, res) => {
 const httpServer = http.createServer(app);
 const wss = new ws.Server({ server: httpServer });
 
-let clients = [];
-
 wss.on('connection', (ws) => {
-  console.log('Client connected');
-
+  console.log('client connection', wss.clients.size);
   ws.onmessage = (wsevent) => {
     var temp = wsevent.data.toString();
 
     var mySubString = temp.substring(
-      temp.indexOf('{'),
+      temp.lastIndexOf('{'),
       temp.lastIndexOf('}') + 1
     );
-
     const parsed = JSON.parse(mySubString);
-
     const { id, event, ...data } = parsed;
-
     console.log(`receive event [${event}] from client [${id}] data:`, data);
 
-    let messageEvent;
     let message;
-    let buffer;
 
     switch (event) {
       case 'connect':
-        clients.push({
-          id,
+        ws.state = {
+          id: id,
           x: data.x,
           y: data.y,
           name: data.name,
           color: data.color,
-        });
+        };
 
-        messageEvent = 'connect';
+        const init_players = [];
 
-        message = { event: messageEvent, players: clients };
-        buffer = Buffer.from(JSON.stringify(message));
+        if (wss.clients.size > 1) {
+          const connect_msg = { event: 'connect', player: ws.state };
+          wss.clients.forEach((client) => {
+            if (client.state?.id && client.state?.id !== id) {
+              init_players.push(client.state);
+              client.send(JSON.stringify(connect_msg));
+            }
+          });
+          console.log('send new player to all clients', init_players.length);
+        } else {
+          console.log('firest player connected');
+        }
 
-        wss.clients.forEach((client) => {
-          client.send(JSON.stringify(message));
-        });
+        const init_msg = { event: 'init', players: init_players };
+        ws.send(JSON.stringify(init_msg));
 
         break;
 
       case 'move':
-        messageEvent = 'move';
+        ws.state.x = data.x;
+        ws.state.y = data.y;
 
-        const moveIndex = clients.findIndex((client) => client.id === id);
-
-        clients[moveIndex].x = data.x;
-        clients[moveIndex].y = data.y;
-
-        message = { event: messageEvent, player: clients[moveIndex] };
+        message = { event: 'move', player: ws.state };
 
         wss.clients.forEach((client) => {
-          client.send(JSON.stringify(message));
+          if (client.id !== id) {
+            client.send(JSON.stringify(message));
+          }
         });
 
         break;
 
       case 'bullet':
-        messageEvent = 'bullet';
+        ws.state.x = data.x;
+        ws.state.y = data.y;
+        ws.state.mouse_x = data.mouse_x;
+        ws.state.mouse_y = data.mouse_y;
 
-        const bulletIndex = clients.findIndex((client) => client.id === id);
-
-        clients[bulletIndex].x = data.x;
-        clients[bulletIndex].y = data.y;
-        clients[bulletIndex].mouse_x = data.mouse_x;
-        clients[bulletIndex].mouse_y = data.mouse_y;
-
-        message = { event: messageEvent, player: clients[bulletIndex] };
-
-        console.log(message);
+        message = { event: 'bullet', player: ws.state };
 
         wss.clients.forEach((client) => {
-          client.send(JSON.stringify(message));
+          if (client.id !== id) {
+            client.send(JSON.stringify(message));
+          }
         });
 
         break;
 
       case 'disconnect':
-        const index = clients.findIndex((client) => client.id === id);
-
-        messageEvent = 'disconnect';
-        message = { event: messageEvent, index, player: clients[index] };
-
-        if (index > -1) {
-          clients.splice(index, 1);
-        }
-
-        wss.clients.forEach((client) => {
-          client.send(JSON.stringify(message));
-        });
-
         break;
 
       default:
@@ -114,7 +95,22 @@ wss.on('connection', (ws) => {
   };
 
   ws.onclose = (event) => {
-    console.log('close socket');
+    console.log('closing socket');
+    try {
+      if (ws.state?.id) {
+        console.log('need to destroy instance player');
+        message = { event: 'disconnect', player: { id: ws.state.id } };
+        console.log(message);
+        wss.clients.forEach((client) => {
+          client.send(JSON.stringify(message));
+        });
+        console.log('socket closed', wss.clients.size);
+      } else {
+        console.log('no need to send destroy event');
+      }
+    } catch (error) {
+      console.log(error);
+    }
   };
 });
 
